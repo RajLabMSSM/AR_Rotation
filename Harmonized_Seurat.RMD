@@ -1,0 +1,500 @@
+---
+title: "merge_ind"
+author: "Ashley Richardson"
+date: "2024-02-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.17", .libPaths())) 
+library(Seurat)
+libraru(dyplr)
+```
+
+
+## Merge my three seurat objects. 
+pbmc.unstim - baseline pbmcs from healthy donors and PD
+pbmc.m - monomer a-syn stimulated pbmcs from healthy donors and PD
+pbmc.f - fibril a-syn stimulated pbmcs from healthy donors and PD
+```{r}
+m_2 <- merge(pbmc.unstim, y = c(pbmc.m, pbmc.f), add.cell.ids = c("u", "m","f"),
+             project = "pbmc_PD",
+             merge.data = TRUE)
+```
+
+## QC of merged object. 
+```{r}
+#Visualize QC metrics as a violin plot - should be per donor, but need demuxlet first
+VlnPlot(m_2, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "orig.ident") #this should be by subjectID
+
+#### Preprocessing ####
+source("/sc/arion/projects/ad-omics/sc_PBMC/snake/scripts/npcs.R") #source npcs function to estimate the number of PCs to use
+source("/sc/arion/projects/ad-omics/sc_PBMC/snake/scripts/preProcessSC.R") #using function so we can call same one in next rule
+
+#Run the desired normalization, scaling, PCA, dimensional reduction
+srat.merge <- preProcessSC(m_2)
+
+#Create preprocessing plots
+pc_var = c(srat.merge@reductions[["umap"]]@misc[["n.pcs.used"]], npcs(srat.merge, reduction = "pca", var.total = 0.90),
+           npcs(srat.merge, reduction = "pca", var.total = 0.85), npcs(srat.merge, reduction = "pca", var.total = 0.80))
+
+## elbow plot to check the PCs and where 90% of variation occurs. In this case, it is at 30 PCs 
+ElbowPlot(srat.merge, ndims=50) +
+  geom_vline(xintercept = pc_var[1], color = "blue", linetype="dashed") +
+  geom_vline(xintercept = pc_var[2], color = "blue", linetype="dotted") +
+  geom_vline(xintercept = pc_var[3], color = "blue", linetype="dotted") +
+  geom_vline(xintercept = pc_var[4], color = "blue", linetype="dotted") +
+  geom_text(aes(x=pc_var[1], label="\n95% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[2], label="\n90% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[3], label="\n85% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[4], label="\n80% variation", y=10), colour="blue", angle=90, check_overlap = T)
+
+DimHeatmap(srat.merge, dims = 1:15, cells = 500, balanced = TRUE)
+DimPlot(srat.merge, reduction = "pca")
+DimPlot(srat.merge, reduction = "umap", label = TRUE, group.by = "condition")
+
+#Save preprocessing plots
+pdf(file=paste0("plots.preprocessing.pdf"), height = 9, width = 17) 
+ep
+hmap
+pcap
+umapp
+dev.off()
+```
+
+
+## Harmonize the merged seurat object
+```{r}
+#if multiple covariates were provided, fix formatting for use
+if(str_detect(covars, ",")){
+	covars = strsplit(covars, ",")[[1]]
+}
+
+#Run Harmony
+srat.merge <- srat.merge %>% 
+  RunHarmony(group.by.vars= "orig.ident",
+             reduction.use='pca', plot_convergence = F,
+             verbose=TRUE)
+
+n.pcs = npcs(srat.merge,reduction="harmony")
+
+srat.merge <- 
+  srat.merge %>% RunUMAP(
+    reduction = 'harmony',
+    dims = 1:n.pcs,
+    reduction.name='umap_harmony'
+  )  
+srat.merge@reductions$umap_harmony@misc$n.pcs.used <- n.pcs
+
+srat.merge <- 
+  srat.merge %>% FindNeighbors(
+    reduction = 'harmony',
+    dims = 1:n.pcs, 
+    graph.name = 'harmony_snn',
+    force.recalc = TRUE,
+    verbose = FALSE
+  )
+
+srat.merge <- FindClusters(
+  object = srat.merge, 
+  resolution = 0.4,
+  graph.name='harmony_snn'
+)
+srat.merge[['harmony_res.0.4']] <- as.numeric(srat.merge@active.ident) # save idents as numerics
+
+#Create integration plots
+##choosing number of PCs
+pc_var_harm = c(srat.merge@reductions[["umap_harmony"]]@misc[["n.pcs.used"]], npcs(srat.merge, reduction = "harmony", var.total = 0.90),
+           npcs(srat.merge, reduction = "harmony", var.total = 0.85), npcs(srat.merge, reduction = "harmony", var.total = 0.80))
+ep_harm = ElbowPlot(srat.merge, ndims=50) +
+  geom_vline(xintercept = pc_var[1], color = "blue", linetype="dashed") +
+  geom_vline(xintercept = pc_var[2], color = "blue", linetype="dotted") +
+  geom_vline(xintercept = pc_var[3], color = "blue", linetype="dotted") +
+  geom_vline(xintercept = pc_var[4], color = "blue", linetype="dotted") +
+  geom_text(aes(x=pc_var[1], label="\n95% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[2], label="\n90% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[3], label="\n85% variation", y=10), colour="blue", angle=90, check_overlap = T) +
+  geom_text(aes(x=pc_var[4], label="\n80% variation", y=10), colour="blue", angle=90, check_overlap = T)
+
+##UMAPs
+dp_harms <- DimPlot(object = srat.merge, reduction = "harmony", pt.size = .1, group.by = "orig.ident") + NoLegend()
+vp_harms <- VlnPlot(object = srat.merge, features = "harmony_1", group.by = "orig.ident", pt.size = .1) + NoLegend()
+qc_harm = plot_grid(dp_harms,vp_harms)
+
+dp_harm_af = DimPlot(srat.merge, reduction = "umap_harmony", group.by = "orig.ident") + plot_annotation(title = "After integration (Harmony)")
+dp_harm_bf_splt = DimPlot(srat.merge, reduction = "umap_harmony", group.by = "orig.ident", pt.size = .1, split.by = 'orig.ident') + NoLegend()
+dp_harm_bf = DimPlot(srat.merge, reduction = "umap", group.by = "orig.ident") + NoLegend() + plot_annotation(title = "Before integration (Harmony)")
+#both
+compdp = cowplot::plot_grid(ncol = 2, dp_harm_bf, dp_harm_af)
+
+#Save integration plots
+pdf(file= "plots.harmony.pdf", height = 9, width = 17) 
+ep_harm
+qc_harm
+dp_harm_bf
+dp_harm_bf_splt
+dp_harm_af
+compdp
+dev.off()
+
+#save file
+saveRDS(srat.merge, file="srat.merge.RDS")
+```
+
+```{r}
+srat.diet <- DietSeurat(srat.merge, assays = "RNA", dimreducs =c('pca','umap','umap_harmony'), graphs = 'harmony_snn')
+```
+
+## SingleR Annotation 
+Automatic annotation. Code from Mikaela's github. 
+
+```{r}
+library(SingleR)
+library(celldex)
+library(ggeasy)
+library(ggplot2)
+library(pheatmap)
+
+srat.diet <- JoinLayers(srat.diet)
+srat = GetAssayData(object = srat.diet, layer = "counts", assay = "RNA")
+ref <- HumanPrimaryCellAtlasData()
+
+#bulk prediction using Immune Cell Expression 
+pred.bulk <- SingleR(test = srat, ref = ref, labels = ref$label.fine)
+
+plotScoreHeatmap(pred.bulk)
+plotDeltaDistribution(pred.bulk, ncol = 3)
+
+srat.diet[["singleR.monaco"]] <- pred.bulk$labels
+DimPlot(srat.diet, reduction = "umap_harmony", group.by = "singleR.monaco", label = TRUE, raster = FALSE) + NoLegend()
+
+markers.df = read.csv("/sc/arion/projects/ad-omics/sc_PBMC/snake/markers.csv")
+DotPlot(srat.diet, features = na.omit(c(markers.df[,2],"CD4")), group.by = "singleR.monaco") + easy_rotate_x_labels(angle = 45, side = "right")
+
+#feature plots
+features = c("CD4","CD8A","SELL","CCR7","GZMA","GZMH","GZMK","FOXP3","TRDV1","TRDV2","TRGV9","TRAV1-2")
+FeaturePlot(srat.diet, reduction = "umap_harmony", features = features)
+```
+
+```{R}
+#counting the cell proportions
+
+d = srat.diet@meta.data[,c("seurat_clusters","singleR.monaco")]
+
+d2 = d %>% 
+  group_by(seurat_clusters) %>% 
+  mutate(total = n()) %>%
+  group_by(seurat_clusters, singleR.monaco) %>% 
+  mutate(count = n(),
+    Percentage = 100 * (count / total))
+
+d2 = unique(d2)
+ggplot(d2, aes(x = singleR.monaco, y = seurat_clusters, fill = Percentage)) + geom_tile() + geom_text(aes(label = round(Percentage, 1), color = ifelse(Percentage>4, "black", "white"))) + scale_colour_manual(values=c("white"="white", "black"="black"),guide="none") + theme_classic() + easy_rotate_x_labels(angle = 45, side = "right") + scale_fill_gradient(low="white", high="blue")
+```
+
+
+```{r}
+cells_ann <- as.data.frame(table(srat.diet@meta.data$singleR.monaco))
+colnames(cells_ann) <- c("singleR.monaco", "number of cells")
+data.frame(cells_ann)
+```
+```{r}
+DimPlot(srat.diet, reduction = 'umap_harmony', group.by = 'condition', label = TRUE, repel = TRUE) + NoLegend()
+```
+
+
+```{r}
+DimPlot(srat.diet, reduction = 'umap_harmony', group.by = 'singleR.monaco', label = TRUE, repel = TRUE) + NoLegend()
+
+```
+
+
+```{r}
+library(kableExtra)
+Idents(srat.diet) <- "seurat_clusters"
+prop.table(table(Idents(srat.diet), srat.diet$condition), margin = 2) %>%
+  kable(row.names = T) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed", "responsive"))
+
+```
+
+Quickly check the proportion of the clusters. 
+```{r}
+pt <- table(Idents(srat.diet), srat.diet$condition)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+
+library(ggplot2)
+library(RColorBrewer)
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") +
+  scale_fill_manual(values = brewer.pal(12, "Paired")) +
+  theme(legend.title = element_blank())
+
+```
+
+
+## Guided/Manual annotation 
+The singleR annotations arent great.. there are a lot of labels that apply to just 1-10 cells, so labeling the clusters is a little difficult. 
+Therefore, I will add manual annotations based on markers expressed in the clusters and the SingleR annotations. 
+
+```{r}
+pbmc.markers <- FindAllMarkers(srat.diet, only.pos = TRUE)
+pbmc.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1)
+
+pbmc.markers %>%
+    group_by(cluster) %>%
+    dplyr::filter(avg_log2FC > 1) %>%
+    slice_head(n = 10) %>%
+    ungroup() -> top10
+top10
+```
+
+
+```{r}
+FeaturePlot(srat.diet, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP",
+    "CD8A"))
+
+```
+
+
+```{r}
+## To do a heatmap on the integrated seurat, I needed to subset and plot less cells for the graph to work.  
+png(filename="heatmap.top10.png", width = 1000, height = 1500)
+DoHeatmap(subset(srat.diet, downsample = 1000), 
+          features = top10$gene)
+dev.off()
+```
+
+
+
+Lets again look at the features plot in which we give a file with known features. This wil help confirm the annotations
+```{r}
+markers.df = read.csv("/sc/arion/projects/ad-omics/sc_PBMC/snake/markers.csv")
+png("knownfeature.plot.png", width = 1000, height = 1000)
+DotPlot(srat.diet, features = na.omit(markers.df[,2],"CD4")) + easy_rotate_x_labels(angle = 45, side = "right")
+dev.off()
+```
+
+I played around with this type of plot to see which markers showed up in a specific cluster. 
+```{r}
+library(ggeasy)
+markers = c("CD8A")
+DotPlot(srat.diet, features = markers, group.by = "seurat_clusters") +
+  easy_rotate_x_labels(angle = 45, side = "right") 
+```
+
+
+
+## Guided Annotation Labels
+Using the above heatmap as a guide, I will add annotations for each cluster. 
+```{r}
+srat.diet@meta.data$cell.type = as.numeric(as.character(srat.diet@meta.data$seurat_clusters))
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==0] <- "CD4+ EM T cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==1] <- "CD8+ T cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==2] <- "gd T Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==3] <- "CD4+ T Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==4] <- "NK Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==5] <- "CD4+ CM T cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==6] <- "gd T Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==7] <- "gd T Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==8] <- "gd T Cells"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==9] <- "B cells/Undefined"
+srat.diet@meta.data$cell.type[srat.diet@meta.data$cell.type==10] <- "gd T Cells"
+```
+
+
+```{r} 
+# my manual annotation
+Idents(srat.diet) <- "cell.type"
+prop_donor <- as.data.frame(prop.table(table(Idents(srat.diet), srat.diet$condition), margin = 2))
+colnames(prop_donor) <- c("cell_type", "condition", "prop")
+
+library(ggplot2)
+library(ggeasy)
+ggplot(data = prop_donor, aes(x = condition, y = prop, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Stimulation", y = "Cell proportion") 
+```
+We can see how singleR annotations look too... not so great. 
+```{r}
+## singleR annotation 
+Idents(srat.diet) <- "singleR.monaco"
+prop_donor <- as.data.frame(prop.table(table(Idents(srat.diet), srat.diet$condition), margin = 2))
+colnames(prop_donor) <- c("cell_type", "condition", "prop")
+
+library(ggplot2)
+ggplot(data = prop_donor, aes(x = condition, y = prop, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Stimulation", y = "Cell proportion") 
+```
+
+Lets compare my annotations to SingleR anotations. 
+```{r}
+library(pheatmap)
+#make table of your two annotation columns
+d = srat.diet@meta.data[,c("cell.type","singleR.monaco")]
+#calculate frequencies 
+freqs2 <- apply(table(d), 1, function(i) i/sum(i))
+#plot
+png("annotation_comparism.png", width = 1000, height = 1000)
+pheatmap(freqs2)
+dev.off()
+```
+
+
+```{r}
+DimPlot(srat.diet, reduction = 'umap_harmony', group.by = 'cell.type', label = TRUE, repel = TRUE) + NoLegend()
+```
+
+
+## Addition of patient Meta Data. 
+
+```{r}
+metadata = read.csv("/sc/arion/projects/ad-omics/ashley/PD_Stim/Donor_MetaData_short.csv", header = T, stringsAsFactors = F, check.names = F)
+metadata <- metadata[-1]
+
+colnames(metadata)
+colnames(metadata) <- gsub(" ", "_", colnames(metadata))
+
+data_tmp = srat.diet@meta.data %>% left_join(metadata[, c("DMX_maxID", "DX", "Sex", "Age")], by="DMX_maxID")
+srat.diet[["DX"]] <- as.character(data_tmp$DX)
+srat.diet[["Sex"]] <- as.character(data_tmp$Sex)
+srat.diet[["Age"]] <- as.character(data_tmp$Age)
+srat.diet[["DMX_maxID"]] <- as.character(data_tmp$DMX_maxID)
+
+head(srat.diet@meta.data)
+```
+
+## Douplet Removal
+Douplets were analyzed in the individual Seurat Objects, but not removed. 
+Here, I will analyze them again and remove them based on demuxlet. 
+
+```{r}
+table(srat.diet@meta.data[,c("DMX_classification.global","condition")]) #number of singlets or doublets identified as each donor
+```
+
+```{r}
+table(srat.diet@meta.data[,c("DMX_classification.global","DX")]) 
+## by diagnosis
+```
+
+```{r}
+table(srat.diet@meta.data[,c("DMX_classification.global","DMX_maxID")]) 
+## by diagnosis
+```
+
+```{r}
+VlnPlot(srat.diet, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "DMX_classification.global")
+```
+Remove douplets
+```{r}
+#douplet removal
+srat.diet <- subset(srat.diet, subset = DMX_classification.global != "DBL")
+
+#confirm that there are no doublets left 
+table(srat.diet$DMX_classification.global)
+```
+
+
+
+## Comparison of cell proportions 
+```{r}
+selected_data <- srat.diet@meta.data[,c("DX", "condition", "cell.type")]
+
+#PD & Baseline
+PD_Base <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Baseline", ]
+count_table <- table(PD_Base)
+PD_Base_Prop <- as.data.frame(prop.table(count_table, margin = 2))
+#CO & Baseline
+CO_Base <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Baseline", ]
+count_table2 <- table(CO_Base)
+CO_Base_Prop <- as.data.frame(prop.table(count_table2, margin = 2))
+
+#PD & Monomer
+PD_Mon <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Monomer", ]
+count_table3 <- table(PD_Mon)
+PD_Mon_Prop <- as.data.frame(prop.table(count_table3, margin = 2))
+#CO & Monomer
+CO_Mon <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Monomer", ]
+count_table4 <- table(CO_Mon)
+CO_Mon_Prop <- as.data.frame(prop.table(count_table4, margin = 2))
+
+#PD & Fibril
+PD_Fib <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Fibril", ]
+count_table5 <- table(PD_Fib)
+PD_Fib_Prop <- as.data.frame(prop.table(count_table5, margin = 2))
+#CO & Fibril
+CO_Fib <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Fibril", ]
+count_table6 <- table(CO_Fib)
+CO_Fib_Prop <- as.data.frame(prop.table(count_table6, margin = 2))
+```
+
+
+```{r}
+library(ggplot2)
+library(ggeasy)
+
+## Baseline PD vs CO
+df_baseline <- dplyr::union(CO_Base_Prop, PD_Base_Prop)
+
+ggplot(data = df_baseline, aes(x = DX, y = Freq, fill = cell.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +  
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## Control Baseline, Monomer, Fibril
+df_CO <- dplyr::union(CO_Base_Prop, CO_Mon_Prop)
+df_CO <- dplyr::union(df_CO, CO_Fib_Prop)
+ggplot(data = df_CO, aes(x = DX, y = Freq, fill = cell.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## PD Baseline, Monomer, Fibril
+df_PD <- dplyr::union(PD_Base_Prop, PD_Mon_Prop)
+df_PD <- dplyr::union(df_PD, PD_Fib_Prop)
+ggplot(data = df_PD, aes(x = DX, y = Freq, fill = cell.type)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## Everything
+df_all <- dplyr::union(df_CO, df_PD)
+ggplot(data = df_all, aes(x = DX, y = Freq, fill = cell.type, label_value(frequency(Freq)))) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+```
+
+
+```{r}
+saveRDS(srat.diet, file = "/sc/arion/projects/ad-omics/ashley/PD_Stim/srat.diet.feb5.RDS")
+```
+
+
+
+
+
