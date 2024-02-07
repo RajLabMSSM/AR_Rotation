@@ -1,0 +1,308 @@
+---
+title: "Parkinson Disease Stimulation Exp - Unstim Samples"
+author: "Ashley Richardson"
+date: "2024-01-22"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+### Rmarkdown to pre-process scRNA seq from baseline (aka unstimated) PBMCs. 
+
+
+## Create the Seurat Object. 
+```{r Library Loading, warning=FALSE} 
+
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
+
+library(Seurat)
+library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+library(dplyr)
+```
+
+```{r Create Seurat Object, paged.print=TRUE, warning=FALSE}
+pbmc.data <- Read10X(data.dir = "/sc/arion/projects/ad-omics/ashley/data/Unstim/outs/per_sample_outs/Unstim/count/sample_filtered_feature_bc_matrix")
+pbmc.unstim <- CreateSeuratObject(counts = pbmc.data, project = "pbmc_sc", min.cells = 3, min.features = 200)
+pbmc.unstim
+```
+
+Lets check how many cells and features we are starting with. 
+```{r}
+length(colnames(pbmc.unstim)) #number of cells
+```
+```{r}
+length(rownames(pbmc.unstim)) #number of features 
+```
+
+## Quality Control (QC)
+
+    a. QC mitochondiral genes. The PercentFeatureSet() calculates the % of counts originating from a set of features - here we are first looking at mitochondiral features, which are genes starting with MT. 
+    b. By using [[ ]], I am adding columns to the pbmc matrix to store this QC data. 
+```{r QC: Mitochondria content, warning=FALSE}
+pbmc.unstim[["percent.mt"]] <- PercentageFeatureSet(pbmc.unstim, pattern = "^MT-")
+
+# Show QC metrics for the first 5 cells
+head(pbmc.unstim@meta.data, 5)
+```
+
+
+```{r QC: VLNplot, warning = FALSE}
+library(farver, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+VlnPlot(pbmc.unstim, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+```
+
+```{r QC: ScatterPLot, warning=FALSE}
+plot1 <- FeatureScatter(pbmc.unstim, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pbmc.unstim, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 
+plot2
+```
+
+```{r QC: remove cells with high MT, warning = FALSE}
+# I will select for %mt under 10% and features greater than 200 to capture alive healthy cells. 
+pbmc.unstim <- subset(pbmc.unstim, subset = nFeature_RNA > 200 & percent.mt < 10)
+head(pbmc.unstim@meta.data)
+```
+
+## Normalize the data. 
+The data is normalized based on the feature (number of genes in a cell) by the total expression. This number is multiplied by 10,000 and then log transformed. The function to do this is "NormalizeData." The values specied below are the default values of this function. 
+```{r Normalize Data}
+pbmc.unstim <- NormalizeData(pbmc.unstim, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+
+## Identification of highly variable features
+```{r Identify Highly Variable Features, warning = FALSE}
+pbmc.unstim <- FindVariableFeatures(pbmc.unstim, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pbmc.unstim), 10)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(pbmc.unstim)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+plot1 
+plot2
+```
+## Scaling the Data
+The data is scaled by doing a linear transformation. 
+The ScaleData function does this by shifting the expression of genes so that the mean expression becomes 0 and the variance is 1. 
+By default, only variable genes are scaled. This is changed by features = all.genes 
+```{r Scale Data, warning=FALSE}
+##Scaling RNA data, we only scale the variable features here for efficiency
+all.genes <- rownames(pbmc.unstim)
+pbmc.unstim <- ScaleData(pbmc.unstim, vars.to.regress = c("percent.mt"))
+```
+
+## Perform linear dimensional reduction 
+For the first principal components, RunPCA shows the most positive (correlated) and most negative (anticorrelated) genes
+```{r Linear Dimensional Reduction, warning=FALSE}
+pbmc.unstim <- RunPCA(pbmc.unstim, features = VariableFeatures(object = pbmc.unstim))
+print(pbmc.unstim[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+The PCA results can be visualized in different ways. 
+```{r Dim Plot of PCs, warning=FALSE}
+VizDimLoadings(pbmc.unstim, dims = 1:2, reduction = "pca")
+```
+
+```{r PC2 vs PC1 scatter plot, warning=FALSE}
+DimPlot(pbmc.unstim, reduction = "pca") + NoLegend()
+```
+
+```{r Heatmap of PC1, warning=FALSE}
+DimHeatmap(pbmc.unstim, dims = 1, cells = 500, balanced = TRUE)
+```
+
+```{r Heatmap of all PCs}
+DimHeatmap(pbmc.unstim, dims = 1:15, cells = 500, balanced = TRUE)
+```
+
+
+## Determine the ‘dimensionality’ of the dataset
+Cells will be clustered based on PCA. How many PC to use is dependent on many factors. For example, if trying to analyze a rare cell subset, you might want to add more PCs. Usually, the first 10 is good to see dimensionality of the data. 
+
+```{r ElbowPlot of PCs, warning=FALSE}
+ElbowPlot(pbmc.unstim)
+```
+
+## Cluster the cells. 
+```{r Cluster Cells, warning=FALSE}
+##We select the top 15 PCs for clustering and tSNE based on PCElbowPlot
+pbmc.unstim <- FindNeighbors(pbmc.unstim, reduction = "pca", dims = 1:15)
+
+pbmc.unstim <- FindClusters(pbmc.unstim, resolution = 0.5, verbose = FALSE)
+```
+
+```{r Head Clusters, warning=FALSE}
+head(Idents(pbmc.unstim), 5)
+```
+
+## Run non-linear dimensional reduction (UMAP/tSNE)
+
+```{r, warning=FALSE}
+pbmc.unstim <- RunUMAP(pbmc.unstim, dims = 1:15)
+```
+
+```{r umap, warning=FALSE}
+# note that you can set `label = TRUE` or use the LabelClusters function to help label
+# individual clusters
+DimPlot(pbmc.unstim, reduction = "umap", label = TRUE)
+```
+
+```{r}
+pbmc.unstim <- RunTSNE(pbmc.unstim, reduction = "pca", dims = 1:15)
+DimPlot(pbmc.unstim, reduction = "tsne", label = TRUE)
+```
+
+Lets check our metadata now of the seurat object to see what has been added. 
+```{r}
+head(pbmc.unstim@meta.data)
+
+#We now have seurat clusters and RNA_snn_res.0.5 columns added. 
+```
+
+
+## Finding differentially expressed features (cluster biomarkers)
+
+```{r markers for every cluster, warning=FALSE}
+# find markers for every cluster compared to all remaining cells, report only the positive
+# ones
+markers_unstim <- FindAllMarkers(pbmc.unstim, only.pos = TRUE)
+```
+
+
+VlnPlot will display the differential expression across the clusters. 
+For example, I am looking here at CD8A and CD4 expression in the clusters. 
+```{r vlnplot of specified marker, warning=FALSE}
+VlnPlot(pbmc.unstim, features = c("CD8A", "CD4"))
+```
+
+
+The raw counts can also be shown instead by adding some parameters.   
+```{r, warning=FALSE}
+VlnPlot(pbmc.unstim, features = c("CD8A", "CD4"), slot = "counts", log = TRUE)
+```
+
+```{r umap feature plot, warning=FALSE}
+FeaturePlot(pbmc.unstim, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCGR3A", "LYZ", "PPBP",
+    "CD8A"))
+```
+
+
+### Combine Seurat object with demuxlet output.  
+
+## First, load and edit the .best demuxlet output file to make it more compatible. 
+```{r}
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
+
+library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library")
+library(tidyr)
+u_demuxlet = read.delim("/sc/arion/projects/ad-omics/ashley/data/Unstim.best", header = T, stringsAsFactors = F, check.names = F)
+head(u_demuxlet)
+```
+To edit: I will split the Best column into multiple columns. 
+```{r}
+u_demuxlet_edit = u_demuxlet %>% 
+  mutate(BEST = gsub("-01","", BEST)) %>%
+  separate(BEST, into=c("DMX_classification.global","DMX_maxID","DMX_secondID"), sep="-") %>%
+  separate(DMX_maxID, into=c("DMX_garbage1","DMX_garbage2","DMX_maxID"), sep ="_") %>%
+  separate(DMX_secondID, into=c("DMX_garbage3","DMX_garbage4","DMX_secondID"), sep ="_") %>%
+  select(-contains("garbage"))
+
+head(u_demuxlet_edit)
+```
+
+```{r}
+table(u_demuxlet_edit$DMX_classification.global) #num of singlets and doublets
+```
+
+```{r}
+table(u_demuxlet_edit$DMX_maxID) #number of cells identified as each donor
+```
+
+
+```{r}
+table(u_demuxlet_edit[,c("DMX_classification.global","DMX_maxID")]) #number of singlets or doublets identified as each donor
+```
+
+
+## Next, I will add this edited demuxlet to the Seurat object. 
+
+```{r}
+u_demuxlet_edit.subset <- u_demuxlet_edit[u_demuxlet_edit$BARCODE %in% colnames(pbmc.unstim),]
+
+pbmc.unstim@meta.data <- cbind(pbmc.unstim@meta.data,u_demuxlet_edit.subset$DMX_maxID,u_demuxlet_edit.subset$DMX_classification.global, u_demuxlet_edit.subset$BARCODE)
+
+head(pbmc.unstim@meta.data)
+```
+
+## Pre-Processing the new object. 
+The Seurat Object has already been preprocessed in my case, so this should be clean)
+
+```{r}
+pbmc.unstim[["percent.mt"]] <- PercentageFeatureSet(pbmc.unstim, pattern = "^MT-")
+
+library(cowplot)
+# look at distribution of metrics by classification
+plot_grid(VlnPlot(pbmc.unstim, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "u_demuxlet_edit.subset$DMX_maxID"))
+
+```
+
+
+```{r}
+VlnPlot(pbmc.unstim, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "u_demuxlet_edit.subset$DMX_classification.global")
+```
+
+Now, select for MT content under 10% and for nfeatureRNA > 200 to ensure getting alive cells. 
+I previously did this, so should see no change in cell numnbers. 
+```{r}
+pbmc.unstim <- subset(pbmc.unstim, subset = nFeature_RNA > 200 & percent.mt < 10)
+length(colnames(pbmc.unstim))
+length(rownames(pbmc.unstim))
+```
+Add column to meta data to identify seurat object as Basline condition. Also rename some columns for clarity purposes. 
+```{r}
+pbmc.unstim@meta.data$condition <- 'Baseline'
+names(pbmc.unstim@meta.data)[names(pbmc.unstim@meta.data) == "u_demuxlet_edit.subset$DMX_classification.global"] <- "DMX_classification.global"
+names(pbmc.unstim@meta.data)[names(pbmc.unstim@meta.data) == "u_demuxlet_edit.subset$DMX_maxID"] <- "DMX_maxID"
+names(pbmc.unstim@meta.data)[names(pbmc.unstim@meta.data) == "u_demuxlet_edit.subset$BARCODE"] <- "Barcode"
+head(pbmc.unstim@meta.data)
+```
+
+
+## Remove douplets.  
+Note - It is a good idea to compare doublet determination by dumuxlet and another resource (i.e. DoupletFinder or scDblFinder). However, these packages do not work with SeuratV5, which is what I used to create my SeuratObject. 
+For now, I am just removing doublets defined by demuxlet. 
+
+```{r}
+#Idents(pbmc.unstim) <- pbmc.unstim$DMX_classification.global
+#pbmc.unstim_sing <- subset(x = pbmc.unstim, idents = c("SNG"), invert = F)
+
+## confirm that there are no doublets left 
+#table(pbmc.unstim_sing$DMX_classification.global)
+```
+
+# Add metadata information. 
+```{r}
+# Add patient data to Seurat object meta data. 
+
+#pt_data <- data.frame(DMX_maxID = c("NYUMD0289", "NYUMD0315", "NYUMD0327", "NYUMD0334"),
+                      #DX = c("PD", "PD", "CO", "CO"),
+                     # Sex = c("Male", "Male", "Male", "Male"),
+                      #Age = c(68, 65, 65, 60))
+
+#merged_df <- merge(pbmc.unstim_sing@meta.data, pt_data, by = "DMX_maxID")
+
+#pbmc.unstim_sing@meta.data <- merged_df
+
+#head(pbmc.unstim_sing@meta.data)
+```
+
+
+```{r Save  as .finalRDS file}
+saveRDS(pbmc.unstim, file = "/sc/arion/projects/ad-omics/ashley/PD_Stim/pbmc.unstim.final.RDS")
+```
+
+
+
