@@ -1,0 +1,111 @@
+---
+title: "scTransform"
+author: "Ashley Richardson"
+date: "2024-02-15"
+output: html_document
+---
+
+```{r}
+library(Seurat)
+```
+### Merging & Transforming Seurat Objects
+Overview of steps: scTransform each seurat object --> merge --> normal processing 
+
+## Load RDS of each seurat object (unstim, monomer, and fibril) that has been preprocessed. 
+```{r}
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.17", .libPaths()))
+
+unstim.sct <- SCTransform(pbmc.unstim, vst.flavor = "v2")
+mon.sct <- SCTransform(pbmc.m, vst.flavor = "v2")
+fib.sct <- SCTransform(pbmc.f, vst.flavor = "v2")
+```
+## Merge.
+```{r}
+m_2 <- merge(unstim.sct, y = c(mon.sct, fib.sct), add.cell.ids = c("u", "m","f"),
+             project = "pbmc_PD",
+             merge.data = TRUE) # merged.data = True will indicate to merge based on the SCT normalized SCT data. 
+```
+
+
+## Add the patient Meta Data. 
+```{r}
+metadata = read.csv("/sc/arion/projects/ad-omics/ashley/PD_Stim/Donor_MetaData_short.csv", header = T, stringsAsFactors = F, check.names = F)
+metadata <- metadata[-1]
+
+colnames(metadata)
+colnames(metadata) <- gsub(" ", "_", colnames(metadata))
+
+data_tmp = m_2@meta.data %>% left_join(metadata[, c("DMX_maxID", "DX", "Sex", "Age")], by="DMX_maxID")
+m_2[["DX"]] <- as.character(data_tmp$DX)
+m_2[["Sex"]] <- as.character(data_tmp$Sex)
+m_2[["Age"]] <- as.character(data_tmp$Age)
+m_2[["DMX_maxID"]] <- as.character(data_tmp$DMX_maxID)
+
+head(m_2@meta.data)
+```
+## Identification and removal of douplets
+```{r}
+table(m_2@meta.data[,c("DMX_classification.global","condition")]) #number of singlets or doublets identified as each donor
+table(m_2@meta.data[,c("DMX_classification.global","DMX_maxID")]) 
+VlnPlot(m_2, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3, group.by = "DMX_classification.global")
+VlnPlot(m_2, features = c("nFeature_SCT", "nCount_SCT", "percent.mt"), ncol = 3, group.by = "DMX_classification.global")
+m_2 <- subset(m_2, subset = DMX_classification.global != "DBL")
+
+#confirm that there are no doublets left 
+table(m_2$DMX_classification.global)
+```
+
+
+## Standard processing. 
+Note - I scaled data: I wasnt sure if this needed to be done after SCTransform, but if I didn't do it then the clusters looked weird. 
+```{r}
+VariableFeatures(m_2[["SCT"]]) <- rownames(m_2[["SCT"]]@scale.data) #set variable features to the SCTransformed data 
+
+m_2 <- ScaleData(m_2) 
+m_2 <- RunPCA(m_2, npcs = 30)
+m_2 <- RunUMAP(m_2, dims = 1:30, seed.use = 2023)
+m_2 <- RunTSNE(m_2, dims = 1:30, seed.use = 2023)
+m_2 <- FindNeighbors(m_2, dims = 1:20)
+m_2 <- FindClusters(m_2, resolution = 0.5)
+
+# Add nested variable to look at condition + Diagnosis 
+m_2@meta.data$nested <- paste(m_2@meta.data$condition, m_2@meta.data$DX, sep = "_")
+
+
+plot1 <- DimHeatmap(m_2, dims = 1:15, cells = 500, balanced = TRUE)
+plot2 <- DimPlot(m_2, reduction = "pca")
+plot3 <- DimPlot(m_2, reduction = "umap", label = TRUE, group.by = "seurat_clusters")
+plot4 <- DimPlot(m_2, reduction = "umap", label = TRUE, group.by = "condition")
+plot5 <- DimPlot(m_2, reduction = "umap", label = TRUE, split.by = "condition")
+plot6 <- DimPlot(m_2, reduction = "umap", label = TRUE, split.by = "nested", ncol = 2)
+plot7 <- DimPlot(m_2, reduction = "umap", label = TRUE, split.by = "condition", group.by = "DX")
+plot8 <- DimPlot(m_2, reduction = "umap", label = TRUE, split.by = "DMX_maxID", group.by = "seurat_clusters")
+
+# Save each plot as an image file
+ggsave("plot1.png", plot1, width = 10, height = 10, units = "in")
+ggsave("plot2.png", plot2, width = 10, height = 10, units = "in")
+ggsave("plot3.png", plot3, width = 10, height = 10, units = "in")
+ggsave("plot4.png", plot4, width = 10, height = 10, units = "in")
+ggsave("plot5.png", plot5, width = 10, height = 10, units = "in")
+ggsave("plot6.png", plot6, width = 10, height = 10, units = "in")
+ggsave("plot7.png", plot7, width = 10, height = 10, units = "in")
+
+# Create PDF
+pdf("all_plots.pnf")
+
+# Notice - cluster 9 in Fibril stimulated 
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,700 @@
+---
+title: "3_Annotations"
+author: "Ashley Richardson"
+date: "2024-02-17"
+output: html_document
+---
+
+```{r library loading}
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.17", .libPaths()))
+library(Seurat)
+```
+Check the proportion of the clusters. 
+```{r}
+pt <- table(Idents(m_2), m_2$condition)
+pt <- as.data.frame(pt)
+pt$Var1 <- as.character(pt$Var1)
+
+library(ggplot2)
+library(RColorBrewer)
+ggplot(pt, aes(x = Var2, y = Freq, fill = Var1)) +
+  theme_bw(base_size = 15) +
+  geom_col(position = "fill", width = 0.5) +
+  xlab("Sample") +
+  ylab("Proportion") + 
+  theme(legend.title = element_blank())
+
+```
+
+
+Lets look at a way to analyze these cell proprtions. 
+<https://github.com/rpolicastro/scProportionTest>
+"This R library facilitates the analysis of the difference between the proprotion of cells in clusters between two scRNA-seq samples. A permutation test is used to calculate a p-value for each cluster, and a confidence interval for the magnitude difference is returned via bootstrapping." 
+
+```{r}
+library(scProportionTest)
+library(ggplot2)
+prop_test <- sc_utils(m_2)
+
+## Lets first look at cell prop by condition. 
+prop_test1 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Baseline", sample_2 = "Monomer",
+	sample_identity = "condition")
+
+prop_test2 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Baseline", sample_2 = "Fibril",
+	sample_identity = "condition")
+
+prop_test3 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Monomer", sample_2 = "Fibril",
+	sample_identity = "condition")
+# Generate the plots
+permutation_plot(prop_test1, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Baseline vs Monomer")
+permutation_plot(prop_test2, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Basline vs Fibril")
+permutation_plot(prop_test3, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Monomer vs Fibril")
+
+
+# By Diagnosis 
+prop_test4 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "CO", sample_2 = "PD",
+	sample_identity = "DX")
+# Generate the plot
+permutation_plot(prop_test4, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("CO vs PD")
+
+
+# By nested --> Diagnosis + condition
+prop_test5 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Baseline_CO", sample_2 = "Baseline_PD",
+	sample_identity = "nested")
+prop_test6 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Monomer_CO", sample_2 = "Monomer_PD",
+	sample_identity = "nested")
+prop_test7 <- permutation_test(
+	prop_test, cluster_identity = "seurat_clusters",
+	sample_1 = "Fibril_CO", sample_2 = "Fibril_PD",
+	sample_identity = "nested")
+
+# Generate the plots
+permutation_plot(prop_test5, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Baseline_CO vs. Baseline_PD")
+permutation_plot(prop_test6, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Monomer_CO vs Monomer_PD")
+permutation_plot(prop_test7, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Fibril_CO vs Fibril_PD")
+
+```
+
+
+
+
+## Annotation - singleR. 
+Use singleR to annoate our clusters now. 
+This is an automatic annotation. Code is from Mikaela's github. 
+```{r, fig.width = 10, fig.height=10 }
+library(SingleR)
+library(celldex)
+library(ggeasy)
+library(ggplot2)
+library(pheatmap)
+
+srat = GetAssayData(object = m_2, layer = "counts", assay = "SCT")
+ref <- MonacoImmuneData()
+
+# prediction using Immune Cell Expression 
+pred.bulk <- SingleR(test = srat, ref = ref, labels = ref$label.fine)
+
+plotScoreHeatmap(pred.bulk)
+plotDeltaDistribution(pred.bulk, ncol = 3)
+
+pred.fine <- pred.bulk
+
+m_2[["singleR.monaco"]] <- pred.fine$labels
+DimPlot(m_2, reduction = "umap", group.by = "seurat_clusters", label = TRUE, raster = FALSE) + NoLegend()
+DimPlot(m_2, reduction = "umap", group.by = "singleR.monaco", label = TRUE, raster = FALSE) + NoLegend()
+DimPlot(m_2, reduction = "umap", group.by = "singleR.monaco", split.by = "condition", label = TRUE, raster = FALSE) + NoLegend()
+DimPlot(m_2, reduction = "umap", group.by = "singleR.monaco", split.by = "DMX_maxID", ncol = 2, label = TRUE, raster = FALSE) + NoLegend()
+
+markers.df = read.csv("/sc/arion/projects/ad-omics/sc_PBMC/snake/markers.csv")
+DotPlot(m_2, features = na.omit(c(markers.df[,2],"CD4")), group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right")
+
+#feature plots
+features = c("CD4","CD8A","SELL","CCR7","GZMA","GZMH","GZMK","FOXP3","TRDV1","TRDV2","TRGV9","TRAV1-2", "CD14", "CD27", "CD69")
+FeaturePlot(m_2, reduction = "umap", features = features)
+
+
+#specific markers for cluster 9 --> from FindMarkers on Fibril_Seurat.RMD for this cluster
+features = c("CCL4", "TRBV6-2", "TRAV12-2", "LAG3", "LINC01871", "KLRC1")
+FeaturePlot(m_2, reduction = "umap", features = features, split.by = "condition")
+
+```
+
+
+```{r}
+saveRDS(m_2, file ="/sc/arion/projects/ad-omics/ashley/PD_Stim/m_2.RDS")
+```
+
+Summarize the singleR anotations to help me with the labelings. 
+```{r, fig.width=10}
+# Create a dataframe
+df <- m_2@meta.data
+
+# Calculate frequency of each cell type per donor
+frequency_df <- df %>%
+  group_by(DMX_maxID, singleR.monaco, DX, condition, nested) %>%
+  summarize(Frequency = n()) %>%
+  ungroup()
+
+ggplot(frequency_df, aes(x=singleR.monaco, y=Frequency, color = DMX_maxID)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=singleR.monaco, y=Frequency, color = nested)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=singleR.monaco, y=Frequency, color = DX)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=singleR.monaco, y=Frequency, color = condition)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+```
+
+
+## Guided/Manual annotation 
+Lets clean up the annotations and define the clusters a little more cohesively. 
+
+Lets better annotate CD8 T cells. 
+<https://www.cellsignal.com/pathways/immune-cell-markers-human>
+```{r}
+m_2_CD8 <- subset(m_2, seurat_clusters %in% c(12, 2, 6, 9, 6))
+
+Activated <- c("CD69", "IL2RA") # CD25 = IL2RA
+DotPlot(m_2_CD8, features = Activated, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("ACTIVATED")
+  ## cluster 9 is activated 
+
+Cytotoxic <- c("GZMB", "PRF1")
+DotPlot(m_2_CD8, features = Cytotoxic, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Cytotoxic")
+# all except 0 and maybe 8
+
+Naive <- c("CCR7")
+DotPlot(m_2_CD8, features = Naive, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Naive")
+## clusters 8 and 11
+
+Eff_mem <- c("PTPRC") #neg for this 
+DotPlot(m_2_CD8, features = Eff_mem, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Eff_mem")
+## maybe 2 and 12
+
+Term_exh <- c("PDCD1", "TOX2", "TIGIT")
+DotPlot(m_2_CD8, features = Term_exh, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Term_exh")
+# 9 is terminally exhusted \
+
+Central_mem <- c("SELL", "CCR7")
+DotPlot(m_2_CD8, features = Central_mem, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Central_mem")
+## cluster 11 
+```
+
+2 - Terminal Effector Memory (hi granzye, hi perforin) - done (TEMRA)
+6 - Effector Memory - Cytotoxic (hi granzye, hi perforin) - done
+9 - Terminal Effector Memory Exhausted (PD1, TIGIT, & IL2RA hi + CD69 hi (activation markers) - done 
+12 - Effector / Central Memory - done
+
+CD4 T cells 
+
+```{r}
+m_2_CD4 <- subset(m_2, seurat_clusters %in% c(0, 1, 3, 4, 7))
+
+TH1 <- c("TBX21", "IFNG")
+DotPlot(m_2_CD4, features = TH1, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("TH1")
+# 11 is TH1 
+
+TH2 <- c("GATA3", "IL4")
+DotPlot(m_2_CD4, features = TH2, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("TH2")
+## cluster 0 is th2 
+
+TH17 <- c("RORC", "IL17A", "IL17B")
+DotPlot(m_2_CD4, features = TH17, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("TH17")
+## 1 is TH17
+
+TREG <- c("FOXP3", "IL2RA")
+DotPlot(m_2_CD4, features = TREG, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("TREG")
+# nothing has foxp3
+
+Naive <- c("CCR7", "SELL")
+DotPlot(m_2_CD4, features = Naive, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("Naive")
+
+tfh <- c("IL21", "CXCR5")
+DotPlot(m_2_CD4, features = tfh, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("tfh")
+## 11 is t follicular helper
+
+TH9 <- c("SPI1", "IL9R")
+DotPlot(m_2_CD4, features = TH9, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("th9")
+
+TH22 <- c("AHR", "IL22")
+DotPlot(m_2_CD4, features = TH22, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("TH22")
+
+cytokines <- c("IL2", "IL4", "IL5", "IL6", "IL8", "IL10", "IL12A", "IL12B", "IL15", "IL17A", "IL17F", "IL18", "IL22", "IFNG", "GZMB", "CD4")
+DotPlot(m_2_CD4, features = cytokines, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("cytokines")
+```
+0 -Th2 - done
+1 - TH17 - done
+3 - Th1 - done 
+4 - Tregs / Th1 - done
+7 - Naive - done (SELL+ CCR7+ )
+
+gd tells: 
+```{r}
+m_2_gd <- subset(m_2, seurat_clusters %in% c(8,11))
+
+gd_markers <- c("IL17A", "IFNG", "IL8", "IL4", "KLRC1", "TNF")
+DotPlot(m_2_gd, features = gd_markers, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("gd_markers")
+```
+11: Activated Vd2-gd T Cells (IFNG+TNF+)
+8: Vd2-gd T Cells
+
+
+NK Cells: 
+```{r}
+m_2_NK <- subset(m_2, seurat_clusters %in% c(5, 10))
+NK <- c("CD69", "NCAM1", "CD16", "GZMB") ## NCAM1 = cd56
+
+DotPlot(m_2_NK, features = NK, group.by = "seurat_clusters") + easy_rotate_x_labels(angle = 45, side = "right") + ggtitle("NK")
+```
+5 - NK CD56 bright
+10 - NK CD56 dim (granzyme++++) 
+
+
+```{r}
+# cell.type is equivalent to Level1. 
+m_2@meta.data$cell.type = as.numeric(as.character(m_2@meta.data$seurat_clusters))
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==0] <- "CD4+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==1] <- "CD4+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==2] <- "CD8+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==3] <- "CD4+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==4] <- "CD4+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==5] <- "NK Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==6] <- "CD8+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==7] <- "CD4+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==8] <- "gd T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==9] <- "CD8+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==10] <- "NK Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==11] <- "gd T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==12] <- "CD8+ T Cells"
+m_2@meta.data$cell.type[m_2@meta.data$cell.type==13] <- "B Cells"
+
+#cell.subset is equivalent to level 2 = more fine labels. 
+m_2@meta.data$cell.subset = as.numeric(as.character(m_2@meta.data$seurat_clusters))
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==0] <- "Th2"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==1] <- "Th17"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==2] <- "Terminal Effector Memory"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==3] <- "Th1"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==4] <- "Tregs / Th1"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==5] <- "NK-CD56bright"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==6] <- "Effectory Memroy"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==7] <- "Naive CD4+"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==8] <- "Vd2-gd"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==9] <- "Exhausted-like Effector Memory"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==10] <- "NK-CD56dim"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==11] <- "Activated Vd2-gd (IFNg+TNF+)"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==12] <- "Effector/Central Memory"
+m_2@meta.data$cell.subset[m_2@meta.data$cell.subset==13] <- "B Cells"
+```
+
+Lets quickly see our frequencies of these cell types I labeled. 
+```{r, fig.width = 15, fig.height=10}
+df <- m_2@meta.data
+frequency_df <- df %>%
+  group_by(DMX_maxID, cell.type, cell.subset, DX, condition, nested) %>%
+  summarize(Frequency = n()) %>%
+  ungroup()
+
+ggplot(frequency_df, aes(x=cell.type, y=Frequency, color = nested)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.type, y=Frequency, color = DX)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.type, y=Frequency, color = condition)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.type, y=Frequency, color = DX)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right") + facet_wrap("condition")
+
+ggplot(frequency_df, aes(x=cell.subset, y=Frequency, color = nested)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.subset, y=Frequency, color = DX)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.subset, y=Frequency, color = condition)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right")
+ggplot(frequency_df, aes(x=cell.subset, y=Frequency, color = DX)) + geom_boxplot() + easy_rotate_x_labels(angle = 45, side = "right") + facet_wrap("condition")
+       
+```
+
+
+```{r} 
+# my manual annotation
+Idents(m_2) <- "cell.type"
+prop_donor <- as.data.frame(prop.table(table(Idents(m_2), m_2$nested), margin = 2))
+colnames(prop_donor) <- c("cell_type", "nested", "prop")
+
+library(ggplot2)
+library(ggeasy)
+ggplot(data = prop_donor, aes(x = nested, y = prop, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Condition", y = "Cell proportion") + ggtitle("Cell Type")
+
+Idents(m_2) <- "cell.subset"
+prop_donor <- as.data.frame(prop.table(table(Idents(m_2), m_2$nested), margin = 2))
+colnames(prop_donor) <- c("cell_subset", "nested", "prop")
+
+library(ggplot2)
+library(ggeasy)
+ggplot(data = prop_donor, aes(x = nested, y = prop, fill = cell_subset)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Condition", y = "Cell proportion") + ggtitle("Cell Subset")
+```
+
+
+We can see how singleR annotations look too... not so great. 
+```{r}
+## singleR annotation 
+Idents(m_2) <- "singleR.monaco"
+prop_donor <- as.data.frame(prop.table(table(Idents(m_2), m_2$condition), margin = 2))
+colnames(prop_donor) <- c("cell_type", "condition", "prop")
+
+library(ggplot2)
+ggplot(data = prop_donor, aes(x = condition, y = prop, fill = cell_type)) +
+  geom_bar(stat = "identity") +
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Stimulation", y = "Cell proportion") 
+```
+
+
+Lets compare my annotations to SingleR anotations. 
+```{r, fig.height=15}
+library(pheatmap)
+#make table of your two annotation columns
+d = m_2@meta.data[,c("cell.subset","singleR.monaco")]
+#calculate frequencies 
+freqs2 <- apply(table(d), 1, function(i) i/sum(i))
+#plot
+pheatmap(freqs2, fontsize = 18)
+
+library(pheatmap)
+#make table of your two annotation columns
+d2 = m_2@meta.data[,c("cell.type","singleR.monaco")]
+#calculate frequencies 
+freqs3 <- apply(table(d2), 1, function(i) i/sum(i))
+#plot
+pheatmap(freqs3, fontsize = 18)
+```
+
+
+
+```{r, fig.width=15}
+DimPlot(m_2, reduction = 'umap', group.by = 'cell.subset', ncol = 2, label = TRUE, repel = TRUE) 
+DimPlot(m_2, reduction = 'umap', group.by = 'cell.type', ncol = 2, label = TRUE, repel = TRUE) 
+DimPlot(m_2, reduction = 'umap', group.by = 'cell.subset', split.by = "nested", ncol = 2, label = FALSE, repel = TRUE) 
+DimPlot(m_2, reduction = 'umap', group.by = 'cell.subset', split.by = "DMX_maxID", ncol = 2, label = FALSE, repel = TRUE) 
+```
+
+
+
+
+## Comparison of cell proportions 
+```{r}
+selected_data <- m_2@meta.data[,c("DX", "condition", "cell.subset", "DMX_maxID")]
+
+#PD & Baseline
+PD_Base <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Baseline", ]
+count_table <- table(PD_Base)
+PD_Base_Prop <- as.data.frame(prop.table(count_table, margin = 2))
+#CO & Baseline
+CO_Base <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Baseline", ]
+count_table2 <- table(CO_Base)
+CO_Base_Prop <- as.data.frame(prop.table(count_table2, margin = 2))
+
+#PD & Monomer
+PD_Mon <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Monomer", ]
+count_table3 <- table(PD_Mon)
+PD_Mon_Prop <- as.data.frame(prop.table(count_table3, margin = 2))
+#CO & Monomer
+CO_Mon <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Monomer", ]
+count_table4 <- table(CO_Mon)
+CO_Mon_Prop <- as.data.frame(prop.table(count_table4, margin = 2))
+
+#PD & Fibril
+PD_Fib <- selected_data[selected_data$DX == "PD" & selected_data$condition == "Fibril", ]
+count_table5 <- table(PD_Fib)
+PD_Fib_Prop <- as.data.frame(prop.table(count_table5, margin = 2))
+#CO & Fibril
+CO_Fib <- selected_data[selected_data$DX == "CO" & selected_data$condition == "Fibril", ]
+count_table6 <- table(CO_Fib)
+CO_Fib_Prop <- as.data.frame(prop.table(count_table6, margin = 2))
+```
+
+
+```{r}
+library(ggplot2)
+library(ggeasy)
+
+## Baseline PD vs CO
+df_baseline <- dplyr::union(CO_Base_Prop, PD_Base_Prop)
+
+ggplot(data = df_baseline, aes(x = DX, y = Freq, fill = cell.subset)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +  
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## Control Baseline, Monomer, Fibril
+df_CO <- dplyr::union(CO_Base_Prop, CO_Mon_Prop)
+df_CO <- dplyr::union(df_CO, CO_Fib_Prop)
+ggplot(data = df_CO, aes(x = DX, y = Freq, fill = cell.subset)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## PD Baseline, Monomer, Fibril
+df_PD <- dplyr::union(PD_Base_Prop, PD_Mon_Prop)
+df_PD <- dplyr::union(df_PD, PD_Fib_Prop)
+ggplot(data = df_PD, aes(x = DX, y = Freq, fill = cell.subset)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+
+## Everything
+df_all <- dplyr::union(df_CO, df_PD)
+ggplot(data = df_all, aes(x = DX, y = Freq, fill = cell.subset, label_value(frequency(Freq)))) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~condition, ncol = 4) + 
+  theme_classic() +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Cell proportion") 
+```
+
+Lets compare cell type proportions with a t test. 
+<https://rajlabmssm.github.io/sc_PBMC_TCR/aim1_large_scale_sc/preliminary_work/sc_PBMC_24donors/sc_PBMC_24samples_figures.html#Cell_Type_Proportions> 
+
+```{r, fig.height = 15, fig.width=15}
+library(ggpubr, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+df_all <- dplyr::union(df_CO, df_PD)
+df_all$Frequency <- df_all$Freq * 100
+
+my_comparisons = list(c("Baseline", "Monomer"),
+                      c("Baseline", "Fibril"), 
+                      c("Monomer", "Fibril"))
+
+ggplot(data = df_all, aes(x = condition, y = Frequency, fill = condition)) +
+  geom_boxplot() +
+facet_wrap(~cell.subset, ncol = 7) + 
+  stat_compare_means(comparisons = my_comparisons, method = "t.test", 
+                     label.x = 1,  # Adjust label position on x-axis
+    size = 6  # Adjust font size
+  ) + # two sided test
+  theme_classic() + theme(
+    text = element_text(size = 20),  # Set the base text size
+    axis.title = element_text(size = 20),  # Set axis title size
+    axis.text = element_text(size = 20),   # Set axis text size
+    plot.title = element_text(size = 20), 
+     panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add panel borders
+  ) + 
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Condition", y = "Proportion") 
+
+my_comparisons = list(c("CO", "PD"))
+ggplot(data = df_all, aes(x = DX, y = Frequency, fill = DX)) +
+  geom_boxplot() +
+  facet_wrap(~cell.subset, ncol = 7) + 
+  stat_compare_means(comparisons = my_comparisons, method = "t.test",
+    label.x = 1,  # Adjust label position on x-axis
+    size = 6  # Adjust font size
+  ) + # two sided test
+  theme_classic() + theme(
+    text = element_text(size = 20),  # Set the base text size
+    axis.title = element_text(size = 20),  # Set axis title size
+    axis.text = element_text(size = 20),   # Set axis text size
+    plot.title = element_text(size = 20), 
+     panel.border = element_rect(color = "black", fill = NA, size = 1)  # Add panel borders
+  ) + 
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Proportion") 
+
+
+#### lets look at diagnosis by condition/stim. 
+# 1. Baseline co vs pd 
+baseline_data <- df_all %>%
+  filter(condition == "Baseline")
+my_comparisons = list(c("CO", "PD"))
+# Create ggplot using the filtered data
+ggplot(data = baseline_data, aes(x = DX, y = Frequency, fill = DX)) +
+  geom_boxplot() +
+  facet_wrap(~cell.subset, ncol = 7) + 
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    method = "t.test",
+    size = 6  
+  ) + 
+  theme_classic() + 
+  theme(
+    text = element_text(size = 20),  
+    axis.title = element_text(size = 16),  
+    axis.text = element_text(size = 14),   
+    plot.title = element_text(size = 20),   
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  
+  ) +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Proportion") +
+  ggtitle("PD vs CO - Baseline")
+
+# 2. Baseline co vs pd 
+monomer_data <- df_all %>%
+  filter(condition == "Monomer")
+my_comparisons = list(c("CO", "PD"))
+# Create ggplot using the filtered data
+ggplot(data = monomer_data, aes(x = DX, y = Frequency, fill = DX)) +
+  geom_boxplot() +
+  facet_wrap(~cell.subset, ncol = 7) + 
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    method = "t.test",
+    size = 6  
+  ) + 
+  theme_classic() + 
+  theme(
+    text = element_text(size = 20),  
+    axis.title = element_text(size = 16),  
+    axis.text = element_text(size = 14),   
+    plot.title = element_text(size = 20),   
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  
+  ) +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Proportion") +
+  ggtitle("PD vs CO - Monomer")
+
+# 3. Fibril co vs pd 
+fibril_data <- df_all %>%
+  filter(condition == "Fibril")
+my_comparisons = list(c("CO", "PD"))
+# Create ggplot using the filtered data
+ggplot(data = fibril_data, aes(x = DX, y = Frequency, fill = DX)) +
+  geom_boxplot() +
+  facet_wrap(~cell.subset, ncol = 7) + 
+  stat_compare_means(
+    comparisons = my_comparisons, 
+    method = "t.test",
+    size = 6  
+  ) + 
+  theme_classic() + 
+  theme(
+    text = element_text(size = 20),  
+    axis.title = element_text(size = 16),  
+    axis.text = element_text(size = 14),   
+    plot.title = element_text(size = 20),   
+    panel.border = element_rect(color = "black", fill = NA, size = 1)  
+  ) +
+  easy_rotate_x_labels(angle = 45, side = "right") +
+  labs(x = "Diagnosis", y = "Proportion") +
+  ggtitle("PD vs CO - Fibril")
+
+
+
+```
+
+
+
+
+
+```{r}
+library(scProportionTest)
+library(ggplot2)
+prop_test <- sc_utils(m_2)
+
+## Lets first look at cell prop by condition. 
+prop_test1 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Baseline", sample_2 = "Monomer",
+	sample_identity = "condition")
+
+prop_test2 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Baseline", sample_2 = "Fibril",
+	sample_identity = "condition")
+
+prop_test3 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Monomer", sample_2 = "Fibril",
+	sample_identity = "condition")
+# Generate the plots
+permutation_plot(prop_test1, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Baseline vs Monomer")
+permutation_plot(prop_test2, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Basline vs Fibril")
+permutation_plot(prop_test3, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Monomer vs Fibril")
+
+
+# By Diagnosis 
+prop_test4 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "CO", sample_2 = "PD",
+	sample_identity = "DX")
+# Generate the plot
+permutation_plot(prop_test4, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("CO vs PD")
+
+
+# By nested --> Diagnosis + condition
+prop_test5 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Baseline_CO", sample_2 = "Baseline_PD",
+	sample_identity = "nested")
+prop_test6 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Monomer_CO", sample_2 = "Monomer_PD",
+	sample_identity = "nested")
+prop_test7 <- permutation_test(
+	prop_test, cluster_identity = "cell.subset",
+	sample_1 = "Fibril_CO", sample_2 = "Fibril_PD",
+	sample_identity = "nested")
+
+# Generate the plots
+permutation_plot(prop_test5, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Baseline_CO vs. Baseline_PD")
+permutation_plot(prop_test6, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Monomer_CO vs Monomer_PD")
+permutation_plot(prop_test7, FDR_threshold = 0.05, log2FD_threshold = log2(1.5), order_clusters = TRUE) + ggtitle("Fibril_CO vs Fibril_PD")
+
+```
+
+
+```{r}
+library(ggplot2)
+library(crumblr)
+library(HMP)
+library(parallel)
+library(glue)
+library(tidyverse)
+library(dreamlet)
+
+setGeneric(
+  "crumblr",
+  function(counts, pseudocount = 0.5, method = c("clr", "clr_2class"), tau = 1) {
+    standardGeneric("crumblr")
+  }
+)
+
+sce <- as.SingleCellExperiment(m_2, assay = "SCT")
+sce$id <- paste0(sce$condition, sce$DMX_maxID, sce$DX )
+
+pb_subset <- aggregateToPseudoBulk(sce,
+  assay = "counts",
+  cluster_id = "cell.subset", #(finer cell types)
+  sample_id = "id",
+  verbose = FALSE
+)
+
+c_obj <- crumblr(pb_subset)
+
+```
+
+
+
+
+
+Save the annotated file as "merged_annotated.RDS". 
+```{r}
+saveRDS(m_2, file = "/sc/arion/projects/ad-omics/ashley/PD_Stim/merged_annotated.RDS")
+```
+
+
+
+
+

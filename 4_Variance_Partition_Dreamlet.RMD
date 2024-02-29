@@ -1,0 +1,482 @@
+---
+title: "Differential Gene Expression"
+author: "Ashley Richardson"
+date: "2024-02-17"
+output: html_document
+---
+
+
+### Variance Parition & Dreamlet
+
+```{r}
+.libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.17", .libPaths()))
+
+library(dreamlet)
+library(SeuratObject)
+library(Seurat) # use version 4.9 
+
+# Open annotated seurat object from 3_Annotations.RMD file. 
+merged_annotated <- readRDS("/sc/arion/projects/ad-omics/ashley/PD_Stim/merged_annotated.RDS")
+
+```
+
+
+I followed this tutorial <https://github.com/GabrielHoffman/dreamlet_analysis/blob/main/Nathan_NatImm_2021/Nathan_NatImm_2021.Rmd>
+
+First, Create a single cell object and then a pseudobulk object. 
+I am creating two with different amounts of cell subsets -> this might alter significance of downstream analysis? 
+```{r}
+sce <- as.SingleCellExperiment(merged_annotated, assay = "SCT")
+sce$id <- paste0(sce$condition, sce$DMX_maxID, sce$DX )
+
+### using cell subset as cluster_id which are more detailed cell names 
+pb_subset <- aggregateToPseudoBulk(sce,
+  assay = "counts",
+  cluster_id = "cell.subset", #(finer cell types)
+  sample_id = "id",
+  verbose = FALSE
+)
+
+## using cell type as cluster_id which are larger proportions and will get fewer assays 
+pb_type <- aggregateToPseudoBulk(sce,
+  assay = "counts",
+  cluster_id = "cell.type", ### bigger cell proportions (CD8, CD4, NK, gd, B cell)
+  sample_id = "id",
+  verbose = FALSE
+)
+
+# one 'assay' per cell type
+assayNames(pb_subset)
+assayNames(pb_type)
+
+```
+
+Second, lets look at the relationship between variables
+Use canonical correlation analysis to show association between variables
+```{r cca, fig.height=6, fig.width=6}
+form = ~ condition + Age + DX + DMX_maxID + nested # nested is just DX_Condition together. 
+C = canCorPairs(form, colData(pb_subset))
+C2 = canCorPairs(form, colData(pb_type))
+plotCorrMatrix(C) ## DMX_maxID, age, and Dx are very very highly correlated. 
+plotCorrMatrix(C2)
+```
+Note the high correlation above. This will impact the formulas below. 
+
+
+### Variance Partioning Analysis 
+Given the high correlation above, I am just including Age which correlates highly with DMX_maxID, and the variables im interested in - DX and condition.  (check if this is OK?) 
+```{r}
+# Normalize and apply voom/voomWithDreamWeights
+# Since DX is highly highly correlated with DMX_maxID and age, I will just use DX 
+form <- ~ DX + condition + Age
+res.proc_type = processAssays(pb_type, form,
+              min.samples = 4,
+              assays = assayNames(pb_type), 
+              BPPARAM = SnowParam(6))
+
+res.proc_subset = processAssays(pb_subset, form,
+              min.samples = 4,
+              assays = assayNames(pb_subset), 
+              BPPARAM = SnowParam(6))
+
+# the resulting object of class dreamletProcessedData stores
+# normalized data and other information. This object was created with formula above and will be used downstrea for differential gene expression. 
+
+details(res.proc_type)
+details(res.proc_subset)
+```
+
+```{r}
+plotVoom(res.proc_type, ncol=4, alpha=.1)  
+
+plotVoom(res.proc_subset, ncol=4, alpha=.1) 
+```
+
+
+Variance partitioning uses a linear mixed model to quantify multiple sources of variation. 
+Variance partitioning will show what is driving the variation. 
+"A typical variancePartition analysis comprises: 1) fitting a linear mixed model to quantify the contribution of each dimension of variation to each gene, 2) visualizing the results, and 3) integrating additional data about each gene to interpret drivers of this variation."
+```{r, fig.width = 10, fig.height=10}
+# run variance partitioning analysis 
+
+form <- ~ DX + condition + Age 
+
+vp.lst_type = fitVarPart(res.proc_type, form)
+vp.lst_subset = fitVarPart(res.proc_subset, form)
+
+plotVarPart(vp.lst_type, label.angle=60, ncol=4)    
+plotVarPart(vp.lst_subset, label.angle=60, ncol=4) 
+
+# Show variance fractions at the gene-level for each cell type
+genes1 <- vp.lst_type$gene[2:4]
+plotPercentBars(vp.lst_type[vp.lst_type$gene %in% genes1, ])
+
+genes2 <- vp.lst_subset$gene[2:4]
+plotPercentBars(vp.lst_subset[vp.lst_subset$gene %in% genes2, ])
+
+```
+
+
+## Make new covariates to compare multiple conditions/diagnoses
+# 1. Compare conditions. 
+```{r, fig.width= 15, fig.height= 10}
+contrasts1 <- c(Diff = "conditionMonomer - conditionBaseline")
+contrasts2 <- c(Diff2 = "conditionFibril- conditionBaseline")
+contrasts3 <- c(Diff3 = "conditionMonomer - conditionFibril")
+
+form <- ~ 0 + condition + DX + Age  
+
+res.dl_type <- dreamlet(res.proc_type, form, contrasts = c(contrasts1, contrasts2, contrasts3))
+res.dl_subset <- dreamlet(res.proc_subset, form, contrasts = c(contrasts1, contrasts2, contrasts3))
+
+## We can look at the tables that were made with the adj.P.Val (gives study-wide FDR).
+## Extract top ten . 
+M_B_table <- as.data.frame(topTable(res.dl_subset, coef = "Diff", number = 100))
+F_B_table <- as.data.frame(topTable(res.dl_subset, coef = "Diff2", number = 100))
+M_F_table <- as.data.frame(topTable(res.dl_subset, coef = "Diff3", number = 100))
+
+## save and export the above so have the stats that are used for volcano plots (what meats FDR threshold/ logfold change threshold) Seperately plot what is <0.05 FDR.. 
+
+# see estimated coefficients
+coefNames(res.dl_subset)
+
+plotVolcano(res.dl_subset, coef = "Diff", cutoff = 0.1, ncol =7) + ggtitle("Monomer vs Baseline") 
+plotVolcano(res.dl_subset, coef = "Diff2", cutoff = 0.1, ncol =7) + ggtitle("Fibril vs Baseline")
+plotVolcano(res.dl_subset, coef = "Diff3", cutoff = 0.1, ncol =7) + ggtitle("Monomer vs Fibril") 
+
+## Notes frm Towafique:  Do box plot of raw data counts of top genes - dummy check to validate what im seeing in the volcano plot. each dot is a count value for that gene. 
+### show FDR < 10% to show. 
+## compare signatures to case-control PD. 
+```
+
+
+Following code adapted from <https://github.com/RajLabMSSM/MyND_AD/blob/7648ea503d6ffde6ab72cd53e25e02afd724a079/all_samples/downstream_analysis/exp_genes.Rmd#L105>
+
+```{r, fig.width=15, fig.height=10}
+
+library(tidyverse)
+library(ggpubr)
+library(ggeasy)
+
+## BASELINE VS MONOMER 
+genes2plot <-c("LINC00892", "HCST", "IFITM2", "SIT1", "NOSIP", "CCR2", "RBFOX2", "CCR7")
+dt <- FetchData(merged_annotated, vars = genes2plot,
+                    layer = "scale.data")
+dt$cell_id = rownames(dt)
+cell_clusters <- as.data.frame(merged_annotated$cell.type) %>% 
+  rownames_to_column("cell_id")
+cell_subset <- as.data.frame(merged_annotated$cell.subset) %>% 
+  rownames_to_column("cell_id")
+cell_condition <- as.data.frame(merged_annotated$condition) %>% 
+  rownames_to_column("cell_id")
+cell_DX <- as.data.frame(merged_annotated$DX) %>% 
+  rownames_to_column("cell_id")
+
+# Perform left join on dt 
+dt2 <- dt %>% left_join(cell_clusters, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_subset, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_condition, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_DX, by = "cell_id")
+
+dt_m <- melt(dt2, measure.vars = genes2plot)
+
+colnames(dt_m) = c("cell_id","cell_type","cell_subset","condition", "DX", "gene", "expression")
+dt_m <- na.omit(dt_m[dt_m$expression > 0, ])
+
+dt_B_M <- subset(dt_m, condition %in% c("Baseline", "Monomer"))
+
+my_comparisons <- list(c("Baseline", "Monomer"))
+
+ggplot(dt_B_M, aes(x = condition, y = expression, color = condition)) +
+  geom_boxplot( ) + 
+  facet_wrap(~gene, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test") + # two sided test
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        strip.text = element_text(size = 12)) +
+  easy_rotate_x_labels(angle = 90, side = "right") 
+
+## BASELINE VS FIBRIL 
+genes2plot <-c("IL32", "CCL4", "IFITM2", "SIT1", "NOSIP", "GNLY", "RBFOX2", "CST7")
+dt <- FetchData(merged_annotated, vars = genes2plot,
+                    layer = "scale.data")
+dt$cell_id = rownames(dt)
+cell_clusters <- as.data.frame(merged_annotated$cell.type) %>% 
+  rownames_to_column("cell_id")
+cell_subset <- as.data.frame(merged_annotated$cell.subset) %>% 
+  rownames_to_column("cell_id")
+cell_condition <- as.data.frame(merged_annotated$condition) %>% 
+  rownames_to_column("cell_id")
+cell_DX <- as.data.frame(merged_annotated$DX) %>% 
+  rownames_to_column("cell_id")
+
+# Perform left join on dt 
+dt2 <- dt %>% left_join(cell_clusters, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_subset, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_condition, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_DX, by = "cell_id")
+
+dt_m <- melt(dt2, measure.vars = genes2plot)
+
+colnames(dt_m) = c("cell_id","cell_type","cell_subset","condition", "DX", "gene", "expression")
+dt_m <- na.omit(dt_m[dt_m$expression > 0, ])
+
+dt_B_F <- subset(dt_m, condition %in% c("Baseline", "Fibril"))
+
+my_comparisons <- list(c("Baseline", "Fibril"))
+
+ggplot(dt_B_F, aes(x = condition, y = expression, color = condition)) +
+  geom_boxplot( ) + 
+  facet_wrap(~gene, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test") + # two sided test
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        strip.text = element_text(size = 12)) +
+  easy_rotate_x_labels(angle = 90, side = "right") 
+
+## MONOMER VS FIBRIL 
+genes2plot <-c("RBFOX2", "TRBV9", "TRAV4", "IL7R", "CX3CR1", "MRPL23", "GZMA", "CCL5")
+dt <- FetchData(merged_annotated, vars = genes2plot,
+                    layer = "scale.data")
+dt$cell_id = rownames(dt)
+cell_clusters <- as.data.frame(merged_annotated$cell.type) %>% 
+  rownames_to_column("cell_id")
+cell_subset <- as.data.frame(merged_annotated$cell.subset) %>% 
+  rownames_to_column("cell_id")
+cell_condition <- as.data.frame(merged_annotated$condition) %>% 
+  rownames_to_column("cell_id")
+cell_DX <- as.data.frame(merged_annotated$DX) %>% 
+  rownames_to_column("cell_id")
+
+# Perform left join on dt 
+dt2 <- dt %>% left_join(cell_clusters, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_subset, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_condition, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_DX, by = "cell_id")
+
+dt_m <- melt(dt2, measure.vars = genes2plot)
+
+colnames(dt_m) = c("cell_id","cell_type","cell_subset","condition", "DX", "gene", "expression")
+dt_m <- na.omit(dt_m[dt_m$expression > 0, ])
+
+dt_M_F <- subset(dt_m, condition %in% c("Monomer", "Fibril"))
+
+my_comparisons <- list(c("Monomer", "Fibril"))
+
+ggplot(dt_M_F, aes(x = condition, y = expression, color = condition)) +
+  geom_boxplot( ) + 
+  facet_wrap(~gene, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test") + # two sided test
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        strip.text = element_text(size = 12)) +
+  easy_rotate_x_labels(angle = 90, side = "right") 
+
+
+
+## BASELINE VS MONOMER VS FIBRIL - LETS LOOK AT ACTIVATION MARKERS 
+genes2plot <-c("IFNG", "CD69", "CXCR4")
+dt <- FetchData(merged_annotated, vars = genes2plot,
+                    layer = "scale.data")
+dt$cell_id = rownames(dt)
+cell_clusters <- as.data.frame(merged_annotated$cell.type) %>% 
+  rownames_to_column("cell_id")
+cell_subset <- as.data.frame(merged_annotated$cell.subset) %>% 
+  rownames_to_column("cell_id")
+cell_condition <- as.data.frame(merged_annotated$condition) %>% 
+  rownames_to_column("cell_id")
+cell_DX <- as.data.frame(merged_annotated$DX) %>% 
+  rownames_to_column("cell_id")
+
+# Perform left join on dt 
+dt2 <- dt %>% left_join(cell_clusters, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_subset, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_condition, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_DX, by = "cell_id")
+
+dt_m <- melt(dt2, measure.vars = genes2plot)
+
+colnames(dt_m) = c("cell_id","cell_type","cell_subset","condition", "DX", "gene", "expression")
+dt_m <- na.omit(dt_m[dt_m$expression > 0, ])
+
+my_comparisons <- list(c("Monomer", "Fibril"), 
+                       c("Baseline", "Monomer"), 
+                       c("Baseline", "Fibril"))
+
+ggplot(dt_m, aes(x = condition, y = expression, color = condition)) +
+  geom_boxplot( ) + 
+  facet_wrap(~gene, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test") + # two sided test
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        strip.text = element_text(size = 12)) +
+  easy_rotate_x_labels(angle = 90, side = "right") 
+
+
+```
+
+
+```{r, fig.width = 15, fig.height=10}
+library(zenith)
+# Load Gene Ontology database
+# use gene 'SYMBOL', or 'ENSEMBL' id
+# use get_MSigDB() to load MSigDB
+# Use Cellular Component (i.e. CC) to reduce run time here
+## FGSEA
+go.gs <- get_GeneOntology("CC", to = "SYMBOL")
+
+
+# Run zenith gene set analysis on result of dreamlet
+
+res_zenith1_subset <- zenith_gsa(res.dl_subset, coef = "Diff", go.gs)
+res_zenith2_subset <- zenith_gsa(res.dl_subset, coef = "Diff2", go.gs)
+res_zenith3_subset <- zenith_gsa(res.dl_subset, coef = "Diff3", go.gs)
+
+# examine results for each ell type and gene set
+
+head(res_zenith1_subset)
+head(res_zenith2_subset)
+head(res_zenith3_subset)
+
+# for each cell type select 5 genesets with largest t-statistic
+# Grey boxes indicate the gene set could not be evaluted because
+#    to few genes were represented
+plotZenithResults(res_zenith1_subset, 5, 1) + ggtitle("Monomer vs Baseline")
+plotZenithResults(res_zenith2_subset, 5, 1) + ggtitle("Fibril vs Basline")
+plotZenithResults(res_zenith3_subset, 5, 1) + ggtitle("Monomer vs Fibril")
+
+# The * indicated FDR < 0.05
+# Biological of fibrils 
+# huge mito shift in PDs observed prior 
+```
+
+
+# 2. Compare Diagnosis.  
+```{r, fig.width= 10, fig.height= 10}
+contrasts4 <- c(Diff4 = "DXPD - DXCO")
+form <- ~ 0 + DX + condition + Age 
+res.dl2_type <- dreamlet(res.proc_type, form, contrasts = contrasts4)
+res.dl2_subset <- dreamlet(res.proc_subset, form, contrasts = contrasts4)
+
+# see estimated coefficients
+coefNames(res.dl2_type)
+coefNames(res.dl2_subset)
+
+M_F_table <- as.data.frame(topTable(res.dl2_subset, coef = "Diff4", number = 100))
+
+# Volcano plot of Diff
+plotVolcano(res.dl2_type, coef = "Diff4", cutoff = 0.1) + ggtitle("PD vs CO")
+plotVolcano(res.dl2_subset, coef = "Diff4", cutoff = 0.1, ncol = 7) + ggtitle("PD vs CO")
+```
+```{r, fig.width = 10, fig.height=10}
+## PD VS CO 
+genes2plot <-c("HLA-B", "HLA-DQA1", "CXCR6", "CX3CR1", "SNHG5", "CARD9", "RPS12")
+dt <- FetchData(merged_annotated, vars = genes2plot,
+                    layer = "scale.data")
+dt$cell_id = rownames(dt)
+cell_clusters <- as.data.frame(merged_annotated$cell.type) %>% 
+  rownames_to_column("cell_id")
+cell_subset <- as.data.frame(merged_annotated$cell.subset) %>% 
+  rownames_to_column("cell_id")
+cell_condition <- as.data.frame(merged_annotated$condition) %>% 
+  rownames_to_column("cell_id")
+cell_DX <- as.data.frame(merged_annotated$DX) %>% 
+  rownames_to_column("cell_id")
+
+# Perform left join on dt 
+dt2 <- dt %>% left_join(cell_clusters, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_subset, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_condition, by = "cell_id")
+dt2 <- dt2 %>% left_join(cell_DX, by = "cell_id")
+
+dt_m <- melt(dt2, measure.vars = genes2plot)
+
+colnames(dt_m) = c("cell_id","cell_type","cell_subset","condition", "DX", "gene", "expression")
+dt_m <- na.omit(dt_m[dt_m$expression > 0, ])
+
+my_comparisons <- list(c("CO", "PD"))
+
+ggplot(dt_m, aes(x = DX, y = expression, color = DX)) +
+  geom_boxplot( ) + 
+  facet_wrap(~gene, scales = "free", ncol = 4) +
+  stat_compare_means(comparisons = my_comparisons, method = "t.test") + # two sided test
+   theme(axis.text.x = element_text(angle = 90, hjust = 1), 
+        strip.text = element_text(size = 12)) +
+  easy_rotate_x_labels(angle = 90, side = "right") 
+```
+
+
+```{r, fig.width = 10 , fig.height=10}
+# Load Gene Ontology database
+# use gene 'SYMBOL', or 'ENSEMBL' id
+# use get_MSigDB() to load MSigDB
+# Use Cellular Component (i.e. CC) to reduce run time here
+go.gs <- get_GeneOntology("CC", to = "SYMBOL")
+
+
+# Run zenith gene set analysis on result of dreamlet
+res_zenith4_type <- zenith_gsa(res.dl2_type, coef = "Diff4", go.gs)
+res_zenith4_subset <- zenith_gsa(res.dl2_subset, coef = "Diff4", go.gs)
+
+# examine results for each ell type and gene set
+head(res_zenith4_type)
+head(res_zenith4_subset)
+# for each cell type select 5 genesets with largest t-statistic
+# and 1 geneset with the lowest
+# Grey boxes indicate the gene set could not be evaluted because
+#    to few genes were represented
+plotZenithResults(res_zenith4_type, 5, 1) + ggtitle("PD vs CO")
+plotZenithResults(res_zenith4_subset, 5, 1) + ggtitle("PD vs CO")
+```
+
+
+### Compare condition AND diagnosis. 
+```{r, fig.width=10, fig.height=10}
+
+form <- ~ 0 + nested + Age #(nested = condition_dx term together)
+
+contrasts5 <- c(Diff5 = "nestedBaseline_PD - nestedBaseline_CO")
+contrasts6 <- c(Diff6 = "nestedMonomer_PD - nestedMonomer_CO")
+contrasts7 <- c(Diff7 = "nestedFibril_PD - nestedFibril_CO")
+
+
+res.dl3_subset <- dreamlet(res.proc_subset, form, contrasts = c(contrasts5, contrasts6, contrasts7))
+
+# Volcano plot of Diff
+plotVolcano(res.dl3_subset, coef = "Diff5", ncol = 7, cutoff = 0.1) + ggtitle("Baseline_PD vs Baseline_CO")
+plotVolcano(res.dl3_subset, coef = "Diff6", ncol = 7, cutoff = 0.1) + ggtitle("Monomer_PD vs Monomer_CO")
+plotVolcano(res.dl3_subset, coef = "Diff7", ncol =7, cutoff = 0.1) + ggtitle("Fibril_PD vs Fibril_CO")
+```
+
+
+```{r, fig.width=10, fig.height=10}
+# Load Gene Ontology database
+# use gene 'SYMBOL', or 'ENSEMBL' id
+# use get_MSigDB() to load MSigDB
+# Use Cellular Component (i.e. CC) to reduce run time here
+go.gs <- get_GeneOntology("CC", to = "SYMBOL")
+
+# Run zenith gene set analysis on result of dreamlet
+res_zenith5_type <- zenith_gsa(res.dl3_type, coef = "Diff5", go.gs)
+res_zenith6_type <- zenith_gsa(res.dl3_type, coef = "Diff6", go.gs)
+res_zenith7_type <- zenith_gsa(res.dl3_type, coef = "Diff7", go.gs)
+
+res_zenith5_subset <- zenith_gsa(res.dl3_subset, coef = "Diff5", go.gs)
+res_zenith6_subset <- zenith_gsa(res.dl3_subset, coef = "Diff6", go.gs)
+res_zenith7_subset <- zenith_gsa(res.dl3_subset, coef = "Diff7", go.gs)
+
+# for each cell type select 5 genesets with largest t-statistic
+# and 1 geneset with the lowest
+# Grey boxes indicate the gene set could not be evaluted because
+#    to few genes were represented
+plotZenithResults(res_zenith5_type, 5) + ggtitle("Baseline_PD vs Baseline_CO")
+plotZenithResults(res_zenith6_type, 5) + ggtitle("Monomer_PD vs Monomer_CO")
+plotZenithResults(res_zenith7_type, 5) + ggtitle("Fibril_PD vs Fibril_CO")
+
+plotZenithResults(res_zenith5_subset, 5) + ggtitle("Baseline_PD vs Baseline_CO")
+plotZenithResults(res_zenith6_subset, 5) + ggtitle("Monomer_PD vs Monomer_CO")
+plotZenithResults(res_zenith7_subset, 5) + ggtitle("Fibril_PD vs Fibril_CO")
+```
+
+
+
+
+
+
+
