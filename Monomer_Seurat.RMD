@@ -16,7 +16,7 @@ knitr::opts_chunk$set(echo = TRUE)
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
 library(Seurat)
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+library(patchwork)
 library(dplyr)
 ```
 
@@ -197,7 +197,7 @@ FeaturePlot(pbmc.m, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCG
 ```{r}
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library")
+library(patchwork)
 library(tidyr)
 m_demuxlet = read.delim("/sc/arion/projects/ad-omics/ashley/data/aM.best", header = T, stringsAsFactors = F, check.names = F)
 head(m_demuxlet)
@@ -270,36 +270,6 @@ names(pbmc.m@meta.data)[names(pbmc.m@meta.data) == "m_demuxlet_edit.subset$DMX_m
 names(pbmc.m@meta.data)[names(pbmc.m@meta.data) == "m_demuxlet_edit.subset$BARCODE"] <- "Barcode"
 head(pbmc.m@meta.data)
 ```
-
-
-## Remove douplets.  
-Note - It is a good idea to compare doublet determination by dumuxlet and another resource (i.e. DoupletFinder or scDblFinder). However, these packages do not work with SeuratV5, which is what I used to create my SeuratObject. 
-For now, I am just removing doublets defined by demuxlet. 
-
-```{r}
-#Idents(pbmc.m) <- pbmc.m$DMX_classification.global
-#pbmc.m_sing <- subset(x = pbmc.m, idents = c("SNG"), invert = F)
-
-## confirm that there are no doublets left 
-#table(pbmc.m_sing$DMX_classification.global)
-```
-
-# Add metadata information. 
-```{r}
-# Add patient data to Seurat object meta data. 
-
-#pt_data <- data.frame(DMX_maxID = c("NYUMD0289", "NYUMD0315", "NYUMD0327", "NYUMD0334"),
-                      #DX = c("PD", "PD", "CO", "CO"),
-                     # Sex = c("Male", "Male", "Male", "Male"),
-                      #Age = c(68, 65, 65, 60))
-
-#merged_df <- merge(pbmc.m_sing@meta.data, pt_data, by = "DMX_maxID")
-
-#pbmc.m_sing@meta.data <- merged_df
-
-#head(pbmc.m_sing@meta.data)
-```
-
 
 ```{r Save  as .finalRDS file}
 saveRDS(pbmc.m, file = "/sc/arion/projects/ad-omics/ashley/PD_Stim/pbmc.monomer.final.RDS")

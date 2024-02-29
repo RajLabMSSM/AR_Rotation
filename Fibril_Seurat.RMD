@@ -15,8 +15,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
-library(Seurat)
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+library(sctransform, lib.loc = "/hpc/users/richaa21/.Rlib")
+library(Seurat, lib.loc = "/hpc/users/richaa21/.Rlib")
+library(patchwork)
 library(dplyr)
 ```
 
@@ -170,6 +171,8 @@ head(pbmc.f@meta.data)
 # find markers for every cluster compared to all remaining cells, report only the positive
 # ones
 markers_f <- FindAllMarkers(pbmc.f, only.pos = TRUE)
+
+cluster5.markers <- FindMarkers(pbmc.f, ident.1 = 5, logfc.threshold = 0.25, test.use = "roc", only.pos = TRUE)
 ```
 
 
@@ -197,7 +200,7 @@ FeaturePlot(pbmc.f, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A", "FCG
 ```{r}
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library")
+library(patchwork)
 library(tidyr)
 f_demuxlet = read.delim("/sc/arion/projects/ad-omics/ashley/data/aF.best", header = T, stringsAsFactors = F, check.names = F)
 head(f_demuxlet)

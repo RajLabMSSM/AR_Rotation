@@ -15,8 +15,9 @@ knitr::opts_chunk$set(echo = TRUE)
 
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
-library(Seurat)
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library")
+library(sctransform, lib.loc = "/hpc/users/richaa21/.Rlib")
+library(Seurat, lib.loc = "/hpc/users/richaa21/.Rlib")
+library(patchwork)
 library(dplyr)
 ```
 
@@ -107,7 +108,7 @@ VizDimLoadings(pbmc.unstim, dims = 1:2, reduction = "pca")
 ```
 
 ```{r PC2 vs PC1 scatter plot, warning=FALSE}
-DimPlot(pbmc.unstim, reduction = "pca") + NoLegend()
+DimPlot(pbmc.unstim, reduction = "pca")
 ```
 
 ```{r Heatmap of PC1, warning=FALSE}
@@ -196,7 +197,6 @@ FeaturePlot(pbmc.unstim, features = c("MS4A1", "GNLY", "CD3E", "CD14", "FCER1A",
 ```{r}
 .libPaths(c("/hpc/packages/minerva-centos7/rpackages/4.2.0/site-library", "/hpc/packages/minerva-centos7/rpackages/bioconductor/3.15", .libPaths()))
 
-library(patchwork, lib.loc = "/hpc/packages/minerva-centos7/rpackages/4.3.0/site-library")
 library(tidyr)
 u_demuxlet = read.delim("/sc/arion/projects/ad-omics/ashley/data/Unstim.best", header = T, stringsAsFactors = F, check.names = F)
 head(u_demuxlet)
@@ -269,36 +269,6 @@ names(pbmc.unstim@meta.data)[names(pbmc.unstim@meta.data) == "u_demuxlet_edit.su
 names(pbmc.unstim@meta.data)[names(pbmc.unstim@meta.data) == "u_demuxlet_edit.subset$BARCODE"] <- "Barcode"
 head(pbmc.unstim@meta.data)
 ```
-
-
-## Remove douplets.  
-Note - It is a good idea to compare doublet determination by dumuxlet and another resource (i.e. DoupletFinder or scDblFinder). However, these packages do not work with SeuratV5, which is what I used to create my SeuratObject. 
-For now, I am just removing doublets defined by demuxlet. 
-
-```{r}
-#Idents(pbmc.unstim) <- pbmc.unstim$DMX_classification.global
-#pbmc.unstim_sing <- subset(x = pbmc.unstim, idents = c("SNG"), invert = F)
-
-## confirm that there are no doublets left 
-#table(pbmc.unstim_sing$DMX_classification.global)
-```
-
-# Add metadata information. 
-```{r}
-# Add patient data to Seurat object meta data. 
-
-#pt_data <- data.frame(DMX_maxID = c("NYUMD0289", "NYUMD0315", "NYUMD0327", "NYUMD0334"),
-                      #DX = c("PD", "PD", "CO", "CO"),
-                     # Sex = c("Male", "Male", "Male", "Male"),
-                      #Age = c(68, 65, 65, 60))
-
-#merged_df <- merge(pbmc.unstim_sing@meta.data, pt_data, by = "DMX_maxID")
-
-#pbmc.unstim_sing@meta.data <- merged_df
-
-#head(pbmc.unstim_sing@meta.data)
-```
-
 
 ```{r Save  as .finalRDS file}
 saveRDS(pbmc.unstim, file = "/sc/arion/projects/ad-omics/ashley/PD_Stim/pbmc.unstim.final.RDS")
